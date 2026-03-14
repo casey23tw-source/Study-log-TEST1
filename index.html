@@ -62,7 +62,6 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
-  <script src="https://accounts.google.com/gsi/client" async></script>
   <script type="text/babel" data-presets="env,react">
 const { useState, useEffect, useRef, useCallback } = React;
 
@@ -72,8 +71,47 @@ const SR_LABELS = ["初次複習","鞏固記憶","短期強化","一週回顧","
 const STAR = "✦";
 const PALETTE = ["#f0a500","#00d4aa","#f472b6","#60a5fa","#fb923c","#34d399","#e879f9","#f87171"];
 const CLIENT_ID = "304999409347-hbsin02nr54r4d63jvb71f6bhih293th.apps.googleusercontent.com";
-const SCOPES = "https://www.googleapis.com/auth/drive.appdata";
+const REDIRECT_URI = "https://casey23tw-source.github.io/Study-log/";
+const SCOPES = "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email";
 const FILE_NAME = "studylog-data.json";
+
+// ─── OAuth2 PKCE helpers ──────────────────────────────────────────────────────
+function genRandom(len) {
+  var arr = new Uint8Array(len);
+  window.crypto.getRandomValues(arr);
+  return Array.from(arr, function(b){ return ('0'+b.toString(16)).slice(-2); }).join('');
+}
+function base64url(str) {
+  return btoa(str).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+function signIn() {
+  var state = genRandom(16);
+  save("oauth_state", state);
+  var params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: "token",
+    scope: SCOPES,
+    state: state,
+    include_granted_scopes: "true",
+  });
+  window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
+}
+
+// 處理從 Google 跳轉回來的 token
+function parseOAuthCallback() {
+  var hash = window.location.hash.substring(1);
+  if(!hash) return null;
+  var params = new URLSearchParams(hash);
+  var token = params.get("access_token");
+  var state = params.get("state");
+  var savedState = load("oauth_state", null);
+  if(!token) return null;
+  if(state && savedState && state !== savedState) return null;
+  // 清掉 URL hash，不然刷新會重複處理
+  history.replaceState(null, null, window.location.pathname);
+  return token;
+}
 
 // ─── Google Drive Sync ────────────────────────────────────────────────────────
 let gToken = null;
@@ -271,83 +309,60 @@ function App() {
     return ()=>clearTimeout(syncTimer.current);
   },[records,subjects,chapters,goals,exam,user]);
 
-  // ── Google Sign-In ─────────────────────────────────────────────────────────
+  // ── Google Sign-In (Redirect Flow) ────────────────────────────────────────
   const [, forceUpdate] = useState(0);
   const tokenClientRef = useRef(null);
 
-  // 初始化 token client，並在有已登入用戶時自動靜默取得 token
-  useEffect(()=>{
-    const tryInit = setInterval(()=>{
-      if(window.google && window.google.accounts && window.google.accounts.oauth2){
-        clearInterval(tryInit);
-        tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
-          client_id: CLIENT_ID,
-          scope: SCOPES + " https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email",
-          callback: function(tokenRes){
-            if(tokenRes.error){ return; }
-            gToken = tokenRes.access_token;
-            // 如果已有 user 資料（刷新後恢復），直接同步
-            const savedUser = load("st2_user", null);
-            if(savedUser && !user){
-              setUser(savedUser);
-              forceUpdate(function(n){ return n+1; });
-              loadFromDrive(gToken);
-            }
-          },
-        });
-        // 如果有已儲存的用戶，靜默取得新 token
-        const savedUser = load("st2_user", null);
-        if(savedUser){
-          tokenClientRef.current.requestAccessToken({ prompt: "" });
-        }
-      }
-    }, 300);
-    return ()=>clearInterval(tryInit);
-  },[]);
-
-  const signIn = () => {
-    if(!tokenClientRef.current){
-      showToast("Google 尚未載入，請稍後再試","#f87171");
+  useEffect(function(){
+    // 檢查是否從 Google OAuth 跳轉回來
+    var token = parseOAuthCallback();
+    if(token){
+      gToken = token;
+      // 取得用戶資料
+      fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: "Bearer " + token }
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(info){
+        var u = { name: info.name, email: info.email, picture: info.picture };
+        save("st2_user", u);
+        save("oauth_token", token);
+        setUser(u);
+        forceUpdate(function(n){ return n+1; });
+        showToast("✦ 已登入 " + info.name);
+        loadFromDrive(token);
+      })
+      .catch(function(){ showToast("取得用戶資料失敗","#f87171"); });
       return;
     }
-    // 重設 callback 為完整登入流程
-    tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES + " https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email",
-      callback: function(tokenRes){
-        if(tokenRes.error){
-          showToast("登入失敗","#f87171");
+    // 刷新頁面時，嘗試恢復 token
+    var savedToken = load("oauth_token", null);
+    var savedUser = load("st2_user", null);
+    if(savedToken && savedUser){
+      gToken = savedToken;
+      // 驗證 token 是否還有效
+      fetch("https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=" + savedToken)
+      .then(function(r){ return r.json(); })
+      .then(function(info){
+        if(info.error){
+          // token 過期，清除
+          save("oauth_token", null);
+          save("st2_user", null);
+          setUser(null);
+          gToken = null;
+        } else {
+          setUser(savedUser);
           forceUpdate(function(n){ return n+1; });
-          return;
         }
-        gToken = tokenRes.access_token;
-        fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-          headers: { Authorization: "Bearer " + gToken }
-        })
-        .then(function(r){ return r.json(); })
-        .then(function(info){
-          const u = { name: info.name, email: info.email, picture: info.picture };
-          save("st2_user", u);
-          setUser(u);
-          forceUpdate(function(n){ return n+1; });
-          showToast("✦ 已登入 " + info.name);
-          loadFromDrive(gToken);
-        })
-        .catch(function(){
-          showToast("取得用戶資料失敗","#f87171");
-          forceUpdate(function(n){ return n+1; });
-        });
-      },
-    });
-    tokenClientRef.current.requestAccessToken({ prompt: "select_account" });
-  };
-
-  const signOut = () => {
-    if(gToken && window.google && window.google.accounts && window.google.accounts.oauth2){
-      window.google.accounts.oauth2.revoke(gToken, function(){});
+      })
+      .catch(function(){});
     }
+  },[]);
+
+  const signOut = function() {
     gToken = null;
     save("st2_user", null);
+    save("oauth_token", null);
     setUser(null);
     setDriveFileId(null);
     setSyncStatus(null);
@@ -364,6 +379,4 @@ function App() {
           // 只有雲端資料比本機多才覆蓋
           if(data.records && data.records.length > 0)  setRecords(data.records);
           if(data.subjects && data.subjects.length > 0) setSubjects(data.subjects);
-          if(data.chapters && data.chapters.length > 0) setChapters(data.chapters);
-          if(data.goals)    setGoals(data.goals);
-          if(data.exam && data.exam.date)     setExam(data.
+          if(data.c
