@@ -272,26 +272,52 @@ function App() {
   },[records,subjects,chapters,goals,exam,user]);
 
   // ── Google Sign-In ─────────────────────────────────────────────────────────
+  const [, forceUpdate] = useState(0);
+  const tokenClientRef = useRef(null);
+
+  // 初始化 token client，並在有已登入用戶時自動靜默取得 token
   useEffect(()=>{
-    const interval = setInterval(()=>{
+    const tryInit = setInterval(()=>{
       if(window.google && window.google.accounts && window.google.accounts.oauth2){
-        clearInterval(interval);
+        clearInterval(tryInit);
+        tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPES + " https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email",
+          callback: function(tokenRes){
+            if(tokenRes.error){ return; }
+            gToken = tokenRes.access_token;
+            // 如果已有 user 資料（刷新後恢復），直接同步
+            const savedUser = load("st2_user", null);
+            if(savedUser && !user){
+              setUser(savedUser);
+              forceUpdate(function(n){ return n+1; });
+              loadFromDrive(gToken);
+            }
+          },
+        });
+        // 如果有已儲存的用戶，靜默取得新 token
+        const savedUser = load("st2_user", null);
+        if(savedUser){
+          tokenClientRef.current.requestAccessToken({ prompt: "" });
+        }
       }
     }, 300);
-    return ()=>clearInterval(interval);
+    return ()=>clearInterval(tryInit);
   },[]);
 
   const signIn = () => {
-    if(!window.google || !window.google.accounts){
+    if(!tokenClientRef.current){
       showToast("Google 尚未載入，請稍後再試","#f87171");
       return;
     }
-    const client = window.google.accounts.oauth2.initTokenClient({
+    // 重設 callback 為完整登入流程
+    tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPES + " https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email",
-      callback: (tokenRes) => {
+      callback: function(tokenRes){
         if(tokenRes.error){
-          showToast("登入失敗: " + tokenRes.error, "#f87171");
+          showToast("登入失敗","#f87171");
+          forceUpdate(function(n){ return n+1; });
           return;
         }
         gToken = tokenRes.access_token;
@@ -303,13 +329,17 @@ function App() {
           const u = { name: info.name, email: info.email, picture: info.picture };
           save("st2_user", u);
           setUser(u);
+          forceUpdate(function(n){ return n+1; });
           showToast("✦ 已登入 " + info.name);
           loadFromDrive(gToken);
         })
-        .catch(function(){ showToast("取得用戶資料失敗","#f87171"); });
+        .catch(function(){
+          showToast("取得用戶資料失敗","#f87171");
+          forceUpdate(function(n){ return n+1; });
+        });
       },
     });
-    client.requestAccessToken();
+    tokenClientRef.current.requestAccessToken({ prompt: "select_account" });
   };
 
   const signOut = () => {
@@ -321,6 +351,7 @@ function App() {
     setUser(null);
     setDriveFileId(null);
     setSyncStatus(null);
+    forceUpdate(function(n){ return n+1; });
     showToast("✦ 已登出");
   };
 
@@ -335,41 +366,4 @@ function App() {
           if(data.subjects && data.subjects.length > 0) setSubjects(data.subjects);
           if(data.chapters && data.chapters.length > 0) setChapters(data.chapters);
           if(data.goals)    setGoals(data.goals);
-          if(data.exam && data.exam.date)     setExam(data.exam);
-          setSyncStatus("ok");
-          showToast("✦ 雲端資料已載入");
-        }).catch(() => {
-          setSyncStatus("error");
-          showToast("載入失敗，保留本機資料","#f87171");
-        }).finally(() => setSyncing(false));
-      } else {
-        // 第一次登入，把本機資料上傳到雲端，完全不動本機
-        const localData = {
-          records: load("st2_records",[]),
-          subjects: load("st2_subjects",[]),
-          chapters: load("st2_chapters",[]),
-          goals: load("st2_goals",{daily:120,weekly:840}),
-          exam: load("st2_exam",{date:"",name:""}),
-        };
-        uploadData(localData, null, token).then(id => {
-          setDriveFileId(id);
-          setSyncStatus("ok");
-          showToast("✦ 本機資料已備份至雲端");
-        }).catch(() => {
-          setSyncStatus("error");
-        }).finally(() => setSyncing(false));
-      }
-    }).catch(() => {
-      setSyncStatus("error");
-      setSyncing(false);
-      showToast("同步失敗，保留本機資料","#f87171");
-    });
-  };
-
-  const syncToDrive = () => {
-    if(!gToken || !user) return;
-    setSyncing(true);
-    const data = { records, subjects, chapters, goals, exam, updatedAt: new Date().toISOString() };
-    const doUpload = (fid) => {
-      uploadData(data, fid, gToken).then(newId => {
-      
+          if(data.exam && data.exam.date)     setExam(data.
