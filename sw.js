@@ -1,4 +1,4 @@
-var CACHE = "studylog-v33";
+var CACHE = "studylog-v20";
 var ASSETS = [
   "/Study-log/",
   "/Study-log/index.html",
