@@ -1,55 +1,31 @@
-var CACHE = "studylog-v20";
-var ASSETS = [
+const CACHE = "studylog-v29";
+const ASSETS = [
   "/Study-log/",
   "/Study-log/index.html",
-  "/Study-log/manifest.json",
-  "/Study-log/icon-192.png",
-  "/Study-log/icon-512.png",
-  "https://unpkg.com/react@18.2.0/umd/react.production.min.js",
-  "https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js",
-  "https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"
+  "/Study-log/manifest.json"
 ];
 
-self.addEventListener("install", function(e){
+self.addEventListener("install", e => {
   e.waitUntil(
-    caches.open(CACHE).then(function(c){
-      return Promise.all(ASSETS.map(function(url){
-        return c.add(url).catch(function(err){
-          console.log("Cache miss:", url);
-        });
-      }));
-    }).then(function(){ return self.skipWaiting(); })
+    caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())
   );
 });
 
-self.addEventListener("activate", function(e){
+self.addEventListener("activate", e => {
   e.waitUntil(
-    caches.keys().then(function(keys){
-      return Promise.all(
-        keys.filter(function(k){ return k !== CACHE; })
-            .map(function(k){ return caches.delete(k); })
-      );
-    }).then(function(){ return self.clients.claim(); })
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
   );
 });
 
-self.addEventListener("fetch", function(e){
-  if(e.request.method !== "GET") return;
+self.addEventListener("fetch", e => {
   e.respondWith(
-    caches.match(e.request).then(function(cached){
-      if(cached) return cached;
-      return fetch(e.request).then(function(res){
-        if(!res || res.status !== 200) return res;
-        var clone = res.clone();
-        caches.open(CACHE).then(function(c){ c.put(e.request, clone); });
-        return res;
-      }).catch(function(){
-        return caches.match("/Study-log/index.html");
-      });
-    })
+    caches.match(e.request).then(cached => cached || fetch(e.request).catch(() => caches.match("/Study-log/index.html")))
   );
 });
 
-self.addEventListener("message", function(e){
+// 收到主程式訊息
+self.addEventListener("message", e => {
   if(e.data === "skipWaiting") self.skipWaiting();
 });
