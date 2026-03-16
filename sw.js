@@ -1,4 +1,4 @@
-var CACHE = "studylog-v60";
+var CACHE = "studylog-v61";
 var ASSETS = [
   "/Study-log/",
   "/Study-log/index.html",
@@ -34,6 +34,14 @@ self.addEventListener("fetch", function(e){
         caches.open(CACHE).then(function(c){ c.put(e.request, clone); });
         return res;
       });
+    })
+  );
+});
+
+// 只有收到 skipWaiting 訊息才更新
+self.addEventListener("message", function(e){
+  if(e.data === "skipWaiting") self.skipWaiting();
+});
     })
   );
 });
